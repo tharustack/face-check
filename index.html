@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Face check</title>
+<meta name="description" content="Browser-only face check — turn left, right, look straight, blink. Runs entirely on-device with MediaPipe Face Landmarker.">
+<meta name="theme-color" content="#152220">
+<meta name="color-scheme" content="dark">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23152220'/%3E%3Ccircle cx='16' cy='13' r='5.5' fill='none' stroke='%2363E6B0' stroke-width='2.5'/%3E%3Cpath d='M6 27c1.5-6 5.5-8 10-8s8.5 2 10 8' fill='none' stroke='%2363E6B0' stroke-width='2.5' stroke-linecap='round'/%3E%3C/svg%3E">
+
+<!-- Open Graph -->
+<meta property="og:type" content="website">
+<meta property="og:title" content="Face check">
+<meta property="og:description" content="Browser-only face check. Turn left, right, look straight, blink — verified on-device. Nothing leaves your device.">
+<meta name="twitter:card" content="summary_large_image">
+
+<style>
+  :root{
+    --bg:#152220; --panel:#1E302D; --line:#365049;
+    --text:#EAF2EF; --dim:#96ADA7;
+    --wait:#F5C542; --go:#63E6B0; --stop:#FF6F61;
+    --state:var(--dim);
+  }
+  *{box-sizing:border-box;margin:0}
+  html,body{height:100%}
+  body{
+    background:var(--bg);color:var(--text);
+    font-family:"Avenir Next","Segoe UI",system-ui,sans-serif;
+    display:flex;justify-content:center;padding:20px 16px 32px;
+  }
+  main{width:100%;max-width:480px;display:flex;flex-direction:column;gap:16px}
+  h1{font-size:1.35rem;font-weight:650;letter-spacing:-.01em}
+  header p{color:var(--dim);font-size:.95rem;margin-top:4px}
+
+  .stage{
+    position:relative;width:100%;aspect-ratio:4/5;overflow:hidden;
+    border-radius:20px;background:#0D1615;border:1px solid var(--line);
+  }
+  .stage[data-state="calib"],.stage[data-state="run"]{--state:var(--wait)}
+  .stage[data-state="ok"]{--state:var(--go)}
+  .stage[data-state="fail"]{--state:var(--stop)}
+  video,canvas{
+    position:absolute;inset:0;width:100%;height:100%;object-fit:cover;
+    transform:scaleX(-1); /* mirror, like a bathroom mirror */
+  }
+  .guide{
+    position:absolute;left:50%;top:50%;width:60%;height:76%;
+    transform:translate(-50%,-50%);border-radius:50%;
+    border:3px solid var(--state);
+    box-shadow:0 0 0 999px rgba(13,22,21,.62);
+    transition:border-color .25s;
+  }
+  .debug{position:absolute;left:10px;bottom:8px;font:12px ui-monospace,monospace;color:var(--dim);display:none}
+  body.debug .debug{display:block}
+
+  .result{
+    position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+    gap:10px;padding:24px;text-align:center;background:rgba(13,22,21,.86);
+  }
+  .result[hidden]{display:none}
+  .badge{width:72px;height:72px;border-radius:50%;display:grid;place-items:center;background:var(--state);color:#0D1615}
+  .badge svg{width:40px;height:40px}
+  .result h2{font-size:1.5rem}
+  .result .why{color:var(--dim);max-width:30ch;line-height:1.4}
+  .log{list-style:none;padding:0;margin-top:6px;display:grid;gap:4px;font-size:.9rem;color:var(--dim);text-align:left}
+  .log b{color:var(--text);font-weight:600}
+
+  .steps{display:flex;gap:6px}
+  .steps i{flex:1;height:6px;border-radius:3px;background:var(--line);transition:background .2s}
+  .steps i.cur{background:var(--wait)}
+  .steps i.done{background:var(--go)}
+  .steps i.bad{background:var(--stop)}
+
+  .prompt{
+    display:flex;align-items:center;gap:14px;min-height:84px;
+    background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:14px 16px;
+  }
+  .prompt .ico{flex:none;width:48px;height:48px;color:var(--wait)}
+  .prompt .ico svg{width:100%;height:100%}
+  #instr{font-size:1.25rem;font-weight:650;letter-spacing:-.01em;line-height:1.2}
+  #hint{color:var(--dim);font-size:.9rem;margin-top:3px;min-height:1.2em}
+
+  .timer{height:4px;border-radius:2px;background:var(--line);overflow:hidden}
+  .timer i{display:block;height:100%;width:0;background:var(--wait)}
+
+  button{
+    font:inherit;font-weight:650;padding:14px 18px;border-radius:14px;border:0;cursor:pointer;
+    background:var(--text);color:#0D1615;
+    transition:background .2s,color .2s;
+  }
+  .stage[data-state="ok"] ~ * button,
+  .stage[data-state="fail"] ~ * button{background:var(--state);color:#0D1615}
+  button:disabled{opacity:.5;cursor:default}
+  button:focus-visible{outline:3px solid var(--wait);outline-offset:3px}
+  @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Face check</h1>
+    <p>Follow the prompts to show a real person is here. Nothing leaves your device.</p>
+  </header>
+
+  <section class="stage" id="stage" data-state="idle">
+    <video id="video" playsinline muted></video>
+    <canvas id="overlay"></canvas>
+    <div class="guide"></div>
+    <div class="debug" id="debug"></div>
+    <div class="result" id="result" hidden>
+      <div class="badge" id="badge"></div>
+      <h2 id="resTitle"></h2>
+      <p class="why" id="resWhy"></p>
+      <ul class="log" id="resLog"></ul>
+    </div>
+  </section>
+
+  <div class="steps" id="steps" aria-hidden="true"></div>
+
+  <div class="prompt" aria-live="polite">
+    <div class="ico" id="icon"></div>
+    <div>
+      <p id="instr">Ready when you are</p>
+      <p id="hint">Good light on your face helps.</p>
+    </div>
+  </div>
+  <div class="timer"><i id="timerFill"></i></div>
+
+  <button id="go">Start verification</button>
+</main>
+
+<script type="module">
+import { FilesetResolver, FaceLandmarker } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+
+/* ---------- Tunable settings ---------- */
+const CFG = {
+  steps: 4,            // number of random challenges
+  stepTimeout: 7000,   // ms allowed per challenge
+  hold: 350,           // ms a pose must be held (turns / straight)
+  turnDelta: 0.12,     // yaw change from baseline that counts as a turn
+  straightDelta: 0.05, // yaw tolerance for "look straight"
+  blinkRatio: 0.70,    // eye closed when EAR < baseline * this
+  calibMs: 1500,       // neutral-face calibration time
+  lostMs: 1200,        // face missing this long = fail
+};
+const MODEL_URL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
+const WASM_URL  = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
+
+/* ---------- DOM ---------- */
+const $ = id => document.getElementById(id);
+const video = $("video"), canvas = $("overlay"), ctx = canvas.getContext("2d");
+const stage = $("stage"), goBtn = $("go");
+if (new URLSearchParams(location.search).has("debug")) document.body.classList.add("debug");
+
+/* ---------- Copy + icons ---------- */
+const LABEL = {
+  left: "Turn your head left",
+  right: "Turn your head right",
+  straight: "Look straight at the camera",
+  blink: "Blink",
+};
+const svg = (p, size = 48) =>
+  `<svg viewBox="0 0 48 48" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
+const ICON = {
+  left: svg('<path d="M40 24H10M22 12L10 24l12 12"/>'),
+  right: svg('<path d="M8 24h30M26 12l12 12-12 12"/>'),
+  straight: svg('<circle cx="24" cy="24" r="16"/><circle cx="24" cy="24" r="4" fill="currentColor"/>'),
+  blink: svg('<path d="M4 24C10 14 18 10 24 10s14 4 20 14c-6 10-14 14-20 14S10 34 4 24z"/><circle cx="24" cy="24" r="6"/>'),
+  idle: svg('<circle cx="24" cy="20" r="8"/><path d="M8 42c2-9 9-13 16-13s14 4 16 13"/>'),
+};
+const CHECK = svg('<path d="M10 25l9 9 19-20"/>', 40).replace('stroke-width="3"', 'stroke-width="4"');
+const CROSS = svg('<path d="M12 12l24 24M36 12L12 36"/>', 40).replace('stroke-width="3"', 'stroke-width="4"');
+
+/* ---------- Geometry (MediaPipe face-mesh indices) ---------- */
+const EYE_L = [33, 160, 158, 133, 153, 144];
+const EYE_R = [362, 385, 387, 263, 373, 380];
+const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+const median = a => [...a].sort((x, y) => x - y)[Math.floor(a.length / 2)];
+const pct = (a, p) => [...a].sort((x, y) => x - y)[Math.floor((a.length - 1) * p)];
+
+function measure(lm, vw, vh) {
+  const P = i => ({ x: lm[i].x * vw, y: lm[i].y * vh });   // pixel space (fixes aspect ratio)
+  const ear = idx => {
+    const [p1, p2, p3, p4, p5, p6] = idx.map(P);
+    return (dist(p2, p6) + dist(p3, p5)) / (2 * dist(p1, p4));
+  };
+  const left = P(234), right = P(454), nose = P(1);
+  return {
+    // 0.5 = facing camera. Raw camera space: person's LEFT turn -> ratio rises.
+    yaw: (nose.x - left.x) / (right.x - left.x),
+    ear: (ear(EYE_L) + ear(EYE_R)) / 2,
+    faceW: dist(left, right) / vw,
+  };
+}
+
+/* ---------- State ---------- */
+let landmarker = null, stream = null, running = false, lastT = -1;
+let phase = "idle";            // idle | calib | run | done
+let seq = [], idx = 0, results = [];
+let stepStart = 0, holdStart = 0, lostAt = 0;
+let calib = null, base = { yaw: 0.5, ear: 0.3 };
+let blink = { closedSince: 0, seen: false };
+
+const rnd = n => crypto.getRandomValues(new Uint32Array(1))[0] % n;
+function makeSequence(n) {
+  const pool = ["left", "right", "straight", "blink"];
+  for (;;) {
+    const s = []; let prev = "straight";       // user starts out facing straight
+    for (let i = 0; i < n; i++) { let c; do { c = pool[rnd(4)]; } while (c === prev); s.push(c); prev = c; }
+    if (s.includes("blink") && s.some(x => x === "left" || x === "right")) return s;
+  }
+}
+
+/* ---------- UI helpers ---------- */
+function setInstr(key, text, icon) {
+  $("instr").textContent = text ?? LABEL[key];
+  $("icon").innerHTML = icon ?? ICON[key];
+}
+const setHint = t => { $("hint").textContent = t || ""; };
+function drawSteps() {
+  $("steps").innerHTML = seq.map((_, i) => {
+    const r = results[i];
+    const cls = r ? (r.ok ? "done" : "bad") : (i === idx && phase === "run" ? "cur" : "");
+    return `<i class="${cls}"></i>`;
+  }).join("");
+}
+function setState(s) { stage.dataset.state = s; }
+
+/* ---------- Flow ---------- */
+async function start() {
+  goBtn.disabled = true;
+  $("result").hidden = true;
+  setState("idle"); results = []; seq = []; drawSteps();
+  setInstr("idle", "Starting camera…"); setHint("Allow camera access when asked.");
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: "user", width: { ideal: 960 }, height: { ideal: 720 } }, audio: false,
+    });
+    video.srcObject = stream; await video.play();
+    canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+
+    if (!landmarker) {
+      setInstr("idle", "Loading face model…"); setHint("First load takes a few seconds.");
+      const fileset = await FilesetResolver.forVisionTasks(WASM_URL);
+      const opts = d => ({
+        baseOptions: { modelAssetPath: MODEL_URL, delegate: d },
+        runningMode: "VIDEO", numFaces: 2, outputFaceBlendshapes: true,
+      });
+      try { landmarker = await FaceLandmarker.createFromOptions(fileset, opts("GPU")); }
+      catch { landmarker = await FaceLandmarker.createFromOptions(fileset, opts("CPU")); }
+    }
+  } catch (e) {
+    console.error(e);
+    setState("fail"); goBtn.disabled = false; goBtn.textContent = "Try again";
+    setInstr("idle", "Camera unavailable", ICON.idle);
+    setHint(e && e.name === "NotAllowedError"
+      ? "Camera permission was blocked. Allow it in your browser settings."
+      : "Couldn't start the camera or model. Check your connection and that the page is on HTTPS or localhost.");
+    stopStream(); return;
+  }
+  phase = "calib"; calib = { t0: 0, yaw: [], ear: [] };
+  setState("calib");
+  setInstr("straight", "Look straight at the camera"); setHint("Hold still for a moment.");
+  goBtn.textContent = "Verifying…";
+  running = true; lastT = -1; requestAnimationFrame(loop);
+}
+
+function beginChallenge() {
+  seq = makeSequence(CFG.steps); idx = 0; results = [];
+  phase = "run"; setState("run");
+  beginStep(performance.now());
+}
+function beginStep(now) {
+  const key = seq[idx];
+  stepStart = now; holdStart = 0;
+  blink = { closedSince: 0, seen: false };
+  setInstr(key); setHint(""); drawSteps();
+}
+function stepPassed(now) {
+  results[idx] = { key: seq[idx], ok: true, ms: now - stepStart };
+  idx++;
+  if (idx >= seq.length) { finish(true, "All movements matched the prompts."); return; }
+  drawSteps(); beginStep(now);
+}
+function finish(ok, reason) {
+  if (phase === "done") return;
+  if (!ok && !results[idx] && seq[idx]) results[idx] = { key: seq[idx], ok: false, ms: 0 };
+  phase = "done"; running = false; drawSteps(); stopStream();
+  setState(ok ? "ok" : "fail");
+  $("badge").innerHTML = ok ? CHECK : CROSS;
+  $("resTitle").textContent = ok ? "Verified" : "Not verified";
+  $("resWhy").textContent = reason;
+  $("resLog").innerHTML = seq.map((k, i) => {
+    const r = results[i];
+    const mark = r ? (r.ok ? "Passed" : "Failed") : "Skipped";
+    const t = r && r.ok ? ` in ${(r.ms / 1000).toFixed(1)}s` : "";
+    return `<li><b>${mark}</b> ${LABEL[k].toLowerCase()}${t}</li>`;
+  }).join("");
+  $("result").hidden = false;
+  setInstr("idle", ok ? "You're verified" : "Verification failed", ok ? ICON.straight : ICON.idle);
+  setHint(ok ? "" : "Check the reason above and try again.");
+  $("timerFill").style.width = "0";
+  goBtn.disabled = false; goBtn.textContent = ok ? "Verify again" : "Try again";
+}
+function stopStream() {
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  stream = null;
+  try { video.pause(); } catch {}
+  video.srcObject = null;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+}
+
+/* ---------- Per-frame logic ---------- */
+function loop() {
+  if (!running) return;
+  requestAnimationFrame(loop);
+  if (!landmarker || video.readyState < 2 || video.currentTime === lastT) return;
+  lastT = video.currentTime;
+  const now = performance.now();
+  const res = landmarker.detectForVideo(video, now);
+  draw(res);
+  handle(res, now);
+}
+
+function handle(res, now) {
+  const faces = res.faceLandmarks.length;
+  if (faces > 1) { finish(false, "More than one face was in view."); return; }
+  if (faces === 0) {
+    if (!lostAt) lostAt = now;
+    setHint("No face detected. Move into the oval.");
+    if (phase === "calib") calib = { t0: 0, yaw: [], ear: [] };
+    else if (phase === "run" && now - lostAt > CFG.lostMs) finish(false, "Your face left the frame during the check.");
+    return;
+  }
+  lostAt = 0;
+
+  const m = measure(res.faceLandmarks[0], video.videoWidth, video.videoHeight);
+  const bs = res.faceBlendshapes && res.faceBlendshapes[0];
+  const bl = bs ? bs.categories.filter(c => c.categoryName.startsWith("eyeBlink")) : [];
+  const blendBlink = bl.length ? bl.reduce((s, c) => s + c.score, 0) / bl.length : 0;
+  const closed = m.ear < base.ear * CFG.blinkRatio || blendBlink > 0.6;
+
+  if (phase === "calib") { calibrate(m, now); return; }
+  if (phase !== "run") return;
+
+  const d = m.yaw - base.yaw;
+  $("debug").textContent = `yaw Δ ${d.toFixed(3)}  ear ${m.ear.toFixed(3)}/${base.ear.toFixed(3)}  blink ${blendBlink.toFixed(2)}`;
+
+  const elapsed = now - stepStart;
+  $("timerFill").style.width = Math.max(0, 100 - (elapsed / CFG.stepTimeout) * 100) + "%";
+  if (elapsed > CFG.stepTimeout) { finish(false, `Timed out on: ${LABEL[seq[idx]].toLowerCase()}.`); return; }
+
+  const key = seq[idx];
+  let met = false;
+  if (key === "left")  met = d > CFG.turnDelta;
+  if (key === "right") met = d < -CFG.turnDelta;
+  if (key === "straight") met = Math.abs(d) < CFG.straightDelta && !closed;
+
+  if (key === "blink") {
+    const blinkSeen = blink.seen;
+    if (closed) {
+      if (!blink.closedSince) blink.closedSince = now;
+      if (now - blink.closedSince >= 50) blink.seen = true;   // eyes shut for 2+ frames
+    } else {
+      if (blinkSeen) { stepPassed(now); return; }              // closed, then reopened
+      blink.closedSince = 0;
+    }
+    setHint("");
+    return;
+  }
+
+  // Hints for wrong direction / not there yet
+  if (!met) {
+    if (key === "left" && d < -CFG.turnDelta) setHint("Other way. Turn to your left.");
+    else if (key === "right" && d > CFG.turnDelta) setHint("Other way. Turn to your right.");
+    else setHint("");
+    holdStart = 0; return;
+  }
+  if (!holdStart) holdStart = now;
+  if (now - holdStart >= CFG.hold) stepPassed(now);
+}
+
+function calibrate(m, now) {
+  const size = m.faceW;
+  if (size < 0.2)  { setHint("Move a little closer."); calib = { t0: 0, yaw: [], ear: [] }; return; }
+  if (size > 0.7)  { setHint("Move back a little."); calib = { t0: 0, yaw: [], ear: [] }; return; }
+  if (Math.abs(m.yaw - 0.5) > 0.15) { setHint("Face the camera straight on."); calib = { t0: 0, yaw: [], ear: [] }; return; }
+  setHint("Hold still for a moment.");
+  if (!calib.t0) calib.t0 = now;
+  calib.yaw.push(m.yaw); calib.ear.push(m.ear);
+  if (now - calib.t0 >= CFG.calibMs && calib.yaw.length >= 15) {
+    base.yaw = median(calib.yaw);
+    base.ear = pct(calib.ear, 0.75);   // ignore blinks during calibration
+    beginChallenge();
+  }
+}
+
+/* ---------- Overlay drawing (landmark contours) ---------- */
+function draw(res) {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (!res.faceLandmarks.length) return;
+  const lm = res.faceLandmarks[0], w = canvas.width, h = canvas.height;
+  const color = getComputedStyle(stage).getPropertyValue("--state").trim() || "#F5C542";
+  ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.globalAlpha = .85;
+  for (const set of [FaceLandmarker.FACE_LANDMARKS_FACE_OVAL, FaceLandmarker.FACE_LANDMARKS_LEFT_EYE, FaceLandmarker.FACE_LANDMARKS_RIGHT_EYE]) {
+    ctx.beginPath();
+    for (const c of set) {
+      ctx.moveTo(lm[c.start].x * w, lm[c.start].y * h);
+      ctx.lineTo(lm[c.end].x * w, lm[c.end].y * h);
+    }
+    ctx.stroke();
+  }
+  if (lm[1]) {
+    ctx.fillStyle = color;
+    ctx.beginPath(); ctx.arc(lm[1].x * w, lm[1].y * h, 4, 0, 6.283); ctx.fill();  // nose tip
+  }
+  ctx.globalAlpha = 1;
+}
+
+goBtn.addEventListener("click", start);
+setInstr("idle", "Ready when you are");
+</script>
+</body>
+  </html>
