@@ -4,7 +4,7 @@
 > blink — verified on-device with [MediaPipe Face Landmarker][mp]. Zero
 > uploads. Demo-quality liveness UX, **not** an anti-spoofing system.
 
-**[▶ Try it live](https://YOUR-USERNAME.github.io/face-check/)** ← update after enabling Pages
+**[▶ Try it live](https://YOUR-USERNAME.github.io/face-check/)**
 
 ---
 
